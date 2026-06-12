@@ -1261,16 +1261,6 @@ function Attendance({user, employees, toast}) {
     : employees
   const deptEmpIds = deptEmployees.map(e => e.id)
 
-  // build the DB filter based on role
-  const buildFilter = () => {
-    if (isEmployee)  return { employee_id: user.id, month: filterMonth, year: filterYear }
-    if (isTeamLead)  return { employee_ids: filterEmp === 'all' ? deptEmpIds : [filterEmp], month: filterMonth, year: filterYear }
-    // admin
-    return filterEmp === 'all'
-      ? { month: filterMonth, year: filterYear }
-      : { employee_id: filterEmp, month: filterMonth, year: filterYear }
-  }
-
   // ── live timer ──────────────────────────────────────────────
   const startTimer = (checkInTs) => {
     if (timerRef.current) clearInterval(timerRef.current)
@@ -1290,23 +1280,36 @@ function Attendance({user, employees, toast}) {
     return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
   }
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
+    // build filter inline — always uses latest state
+    let filter = { month: filterMonth, year: filterYear }
+    if (isEmployee) {
+      filter.employee_id = user.id
+    } else if (isTeamLead) {
+      const ids = filterEmp === 'all' ? deptEmpIds : [filterEmp]
+      filter.employee_ids = ids.length ? ids : [user.id]
+    } else {
+      if (filterEmp !== 'all') filter.employee_id = filterEmp
+    }
     try {
       const [rec, all] = await Promise.all([
         DB.getTodayAttendance(user.id),
-        DB.getAttendance(buildFilter())
+        DB.getAttendance(filter)
       ])
       setTodayRecord(rec)
-      setAttendance(all||[])
+      setAttendance(all || [])
       if (rec?.check_in && !rec?.check_out) {
         setElapsed(Math.floor((Date.now() - new Date(rec.check_in).getTime()) / 1000))
         startTimer(rec.check_in)
       }
-    } catch(e) { toast('Failed to load attendance','error') }
+    } catch(e) {
+      toast('Failed to load attendance: ' + e.message, 'error')
+    }
     setLoading(false)
-  }
-  useEffect(()=>{load()},[filterEmp,filterMonth,filterYear])
+  }, [filterEmp, filterMonth, filterYear, isEmployee, isTeamLead, JSON.stringify(deptEmpIds), user.id])
+
+  useEffect(() => { load() }, [load])
 
   const handleCheckIn = async () => {
     setSaving(true)
