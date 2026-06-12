@@ -178,7 +178,10 @@ const DB = {
   // ── Attendance ──
   async getAttendance(filters={}) {
     let q = sb.from('attendance').select('*').order('date',{ascending:false})
-    if (filters.employee_id) q = q.eq('employee_id',filters.employee_id)
+    // employee_id: single id (string) → eq filter
+    // employee_ids: array of ids → in filter (for team lead dept scope)
+    if (filters.employee_id)  q = q.eq('employee_id', filters.employee_id)
+    if (filters.employee_ids) q = q.in('employee_id', filters.employee_ids)
     if (filters.month && filters.year) {
       const pad = m => String(m).padStart(2,'0')
       q = q.gte('date',`${filters.year}-${pad(filters.month)}-01`).lte('date',`${filters.year}-${pad(filters.month)}-31`)
@@ -1237,16 +1240,36 @@ function Attendance({user, employees, toast}) {
   const [attendance, setAttendance] = useState([])
   const [todayRecord, setTodayRecord] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [filterEmp, setFilterEmp] = useState(user.role==='employee'?user.id:'all')
   const nowDate = new Date()
   const [filterMonth, setFilterMonth] = useState(nowDate.getMonth()+1)
   const [filterYear, setFilterYear] = useState(nowDate.getFullYear())
+  // team lead: filter by dept employee; admin: 'all' or specific emp
+  const [filterEmp, setFilterEmp] = useState('all')
   const [adminModal, setAdminModal] = useState(false)
   const [adminForm, setAdminForm] = useState({employee_id:employees[0]?.id||'',date:today(),status:'present',notes:''})
   const [saving, setSaving] = useState(false)
-  const [elapsed, setElapsed] = useState(0)       // seconds since check-in
+  const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
-  const isAdmin = user.role==='admin'||user.role==='team_lead'
+
+  const isAdmin    = user.role === 'admin'
+  const isTeamLead = user.role === 'team_lead'
+  const isEmployee = user.role === 'employee'
+
+  // employees this user is allowed to see
+  const deptEmployees = isTeamLead
+    ? employees.filter(e => e.department === user.department)
+    : employees
+  const deptEmpIds = deptEmployees.map(e => e.id)
+
+  // build the DB filter based on role
+  const buildFilter = () => {
+    if (isEmployee)  return { employee_id: user.id, month: filterMonth, year: filterYear }
+    if (isTeamLead)  return { employee_ids: filterEmp === 'all' ? deptEmpIds : [filterEmp], month: filterMonth, year: filterYear }
+    // admin
+    return filterEmp === 'all'
+      ? { month: filterMonth, year: filterYear }
+      : { employee_id: filterEmp, month: filterMonth, year: filterYear }
+  }
 
   // ── live timer ──────────────────────────────────────────────
   const startTimer = (checkInTs) => {
@@ -1272,11 +1295,10 @@ function Attendance({user, employees, toast}) {
     try {
       const [rec, all] = await Promise.all([
         DB.getTodayAttendance(user.id),
-        DB.getAttendance({employee_id:filterEmp==='all'?undefined:filterEmp, month:filterMonth, year:filterYear})
+        DB.getAttendance(buildFilter())
       ])
       setTodayRecord(rec)
       setAttendance(all||[])
-      // resume timer if already checked in but not out
       if (rec?.check_in && !rec?.check_out) {
         setElapsed(Math.floor((Date.now() - new Date(rec.check_in).getTime()) / 1000))
         startTimer(rec.check_in)
@@ -1290,9 +1312,7 @@ function Attendance({user, employees, toast}) {
     setSaving(true)
     try {
       const rec = await DB.checkIn(user.id)
-      setTodayRecord(rec)
-      setElapsed(0)
-      startTimer(rec.check_in)
+      setTodayRecord(rec); setElapsed(0); startTimer(rec.check_in)
       toast('Checked in at '+fmtTime(rec.check_in),'success')
       load()
     } catch(e) { toast('Check-in failed: '+e.message,'error') }
@@ -1304,8 +1324,7 @@ function Attendance({user, employees, toast}) {
     setSaving(true)
     try {
       const rec = await DB.checkOut(todayRecord.id)
-      stopTimer()
-      setTodayRecord(rec)
+      stopTimer(); setTodayRecord(rec)
       toast(`Checked out at ${fmtTime(rec.check_out)} — ${rec.hours_worked}h worked`,'success')
       load()
     } catch(e) { toast('Check-out failed: '+e.message,'error') }
@@ -1316,31 +1335,33 @@ function Attendance({user, employees, toast}) {
     setSaving(true)
     try {
       await DB.upsertAttendance(adminForm)
-      toast('Attendance saved','success')
-      setAdminModal(false)
-      load()
+      toast('Attendance saved','success'); setAdminModal(false); load()
     } catch(e) { toast('Error: '+e.message,'error') }
     setSaving(false)
   }
 
   const checkedIn  = !!todayRecord?.check_in
   const checkedOut = !!todayRecord?.check_out
-
-  // Monthly summary
   const summary = attendance.reduce((acc,r)=>{ acc[r.status]=(acc[r.status]||0)+1; return acc },{})
+
+  // employees available in the filter dropdown
+  const filterableEmployees = isAdmin ? employees : deptEmployees
 
   return (
     <div className="page">
       <div className="page-header">
-        <div><h1 className="page-title">Attendance</h1><p className="page-sub">{monthName(filterMonth)} {filterYear}</p></div>
-        {isAdmin && <button className="btn-primary" onClick={()=>setAdminModal(true)}>+ Log Attendance</button>}
+        <div>
+          <h1 className="page-title">Attendance</h1>
+          <p className="page-sub">
+            {isEmployee ? 'My attendance' : isTeamLead ? `${user.department} dept` : 'All employees'} · {monthName(filterMonth)} {filterYear}
+          </p>
+        </div>
+        {(isAdmin || isTeamLead) && <button className="btn-primary" onClick={()=>setAdminModal(true)}>+ Log Attendance</button>}
       </div>
 
       {/* ── Today hero widget ── */}
       <div className="card" style={{background:'linear-gradient(135deg,#0f172a,#1e1b4b)',border:'none',padding:'28px 32px'}}>
         <div style={{display:'flex',alignItems:'center',gap:32,flexWrap:'wrap'}}>
-
-          {/* Left: status text */}
           <div style={{flex:1,minWidth:200}}>
             <div style={{color:'rgba(255,255,255,.5)',fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'.1em',marginBottom:6}}>
               {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
@@ -1348,19 +1369,13 @@ function Attendance({user, employees, toast}) {
             {checkedOut ? (
               <>
                 <div style={{color:'#86efac',fontSize:22,fontWeight:900}}>✅ Day Complete</div>
-                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>
-                  {fmtTime(todayRecord.check_in)} → {fmtTime(todayRecord.check_out)}
-                </div>
-                <div style={{color:'#fff',fontSize:15,marginTop:2,fontWeight:600}}>
-                  Total: {todayRecord.hours_worked}h worked
-                </div>
+                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>{fmtTime(todayRecord.check_in)} → {fmtTime(todayRecord.check_out)}</div>
+                <div style={{color:'#fff',fontSize:15,marginTop:2,fontWeight:600}}>Total: {todayRecord.hours_worked}h worked</div>
               </>
             ) : checkedIn ? (
               <>
                 <div style={{color:'#fde68a',fontSize:22,fontWeight:900}}>⚙️ Currently Working</div>
-                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>
-                  Checked in at {fmtTime(todayRecord.check_in)}
-                </div>
+                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>Checked in at {fmtTime(todayRecord.check_in)}</div>
               </>
             ) : (
               <>
@@ -1370,54 +1385,30 @@ function Attendance({user, employees, toast}) {
             )}
           </div>
 
-          {/* Center: live timer */}
           {checkedIn && !checkedOut && (
             <div style={{textAlign:'center'}}>
-              <div style={{
-                fontFamily:'monospace',
-                fontSize:48,
-                fontWeight:900,
-                color:'#fff',
-                letterSpacing:'0.05em',
-                lineHeight:1,
-                textShadow:'0 0 40px rgba(99,102,241,.6)'
-              }}>
+              <div style={{fontFamily:'monospace',fontSize:48,fontWeight:900,color:'#fff',letterSpacing:'0.05em',lineHeight:1,textShadow:'0 0 40px rgba(99,102,241,.6)'}}>
                 {fmtElapsed(elapsed)}
               </div>
-              <div style={{color:'rgba(255,255,255,.4)',fontSize:11,marginTop:6,textTransform:'uppercase',letterSpacing:'.1em'}}>
-                hrs : min : sec
-              </div>
+              <div style={{color:'rgba(255,255,255,.4)',fontSize:11,marginTop:6,textTransform:'uppercase',letterSpacing:'.1em'}}>hrs : min : sec</div>
             </div>
           )}
 
           {checkedOut && (
             <div style={{textAlign:'center'}}>
-              <div style={{fontFamily:'monospace',fontSize:48,fontWeight:900,color:'#86efac',letterSpacing:'0.05em',lineHeight:1}}>
-                {todayRecord.hours_worked}h
-              </div>
+              <div style={{fontFamily:'monospace',fontSize:48,fontWeight:900,color:'#86efac',letterSpacing:'0.05em',lineHeight:1}}>{todayRecord.hours_worked}h</div>
               <div style={{color:'rgba(255,255,255,.4)',fontSize:11,marginTop:6,textTransform:'uppercase',letterSpacing:'.1em'}}>total worked</div>
             </div>
           )}
 
-          {/* Right: button */}
           <div>
             {!checkedIn && (
-              <button onClick={handleCheckIn} disabled={saving} style={{
-                background:'#10b981',color:'#fff',border:'none',borderRadius:16,
-                padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',
-                boxShadow:'0 4px 24px rgba(16,185,129,.4)',transition:'transform .1s',
-                display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'
-              }}>
+              <button onClick={handleCheckIn} disabled={saving} style={{background:'#10b981',color:'#fff',border:'none',borderRadius:16,padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',boxShadow:'0 4px 24px rgba(16,185,129,.4)',display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'}}>
                 <span style={{fontSize:22}}>🟢</span> Check In
               </button>
             )}
             {checkedIn && !checkedOut && (
-              <button onClick={handleCheckOut} disabled={saving} style={{
-                background:'#ef4444',color:'#fff',border:'none',borderRadius:16,
-                padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',
-                boxShadow:'0 4px 24px rgba(239,68,68,.4)',transition:'transform .1s',
-                display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'
-              }}>
+              <button onClick={handleCheckOut} disabled={saving} style={{background:'#ef4444',color:'#fff',border:'none',borderRadius:16,padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',boxShadow:'0 4px 24px rgba(239,68,68,.4)',display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'}}>
                 <span style={{fontSize:22}}>🔴</span> Check Out
               </button>
             )}
@@ -1435,21 +1426,18 @@ function Attendance({user, employees, toast}) {
         ].map(s=>(
           <div key={s.label} className="card" style={{display:'flex',alignItems:'center',gap:14}}>
             <div style={{width:46,height:46,borderRadius:12,background:s.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{s.icon}</div>
-            <div>
-              <div style={{fontSize:26,fontWeight:900,color:s.color}}>{s.val}</div>
-              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.label}</div>
-            </div>
+            <div><div style={{fontSize:26,fontWeight:900,color:s.color}}>{s.val}</div><div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.label}</div></div>
           </div>
         ))}
       </div>
 
-      {/* Filters */}
+      {/* Filters — employees see no dropdown, team leads see dept only, admin sees all */}
       <div className="card" style={{padding:'12px 18px'}}>
         <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
-          {isAdmin && (
+          {!isEmployee && (
             <select className="input" style={{width:'auto'}} value={filterEmp} onChange={e=>setFilterEmp(e.target.value)}>
-              <option value="all">All Employees</option>
-              {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+              <option value="all">{isTeamLead ? `All — ${user.department}` : 'All Employees'}</option>
+              {filterableEmployees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           )}
           <select className="input" style={{width:'auto'}} value={filterMonth} onChange={e=>setFilterMonth(Number(e.target.value))}>
@@ -1457,6 +1445,16 @@ function Attendance({user, employees, toast}) {
           </select>
           <input className="input" type="number" style={{width:90}} value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))} min={2020} max={2099}/>
           <button className="btn-sec" onClick={load}>Refresh</button>
+          {isTeamLead && (
+            <span style={{fontSize:12,color:'var(--muted)',marginLeft:4}}>
+              🔒 Showing {user.department} department only
+            </span>
+          )}
+          {isEmployee && (
+            <span style={{fontSize:12,color:'var(--muted)',marginLeft:4}}>
+              🔒 Showing your records only
+            </span>
+          )}
         </div>
       </div>
 
@@ -1467,7 +1465,7 @@ function Attendance({user, employees, toast}) {
             <div style={{overflowX:'auto'}}>
               <table className="tbl">
                 <thead><tr>
-                  {isAdmin && <th>Employee</th>}
+                  {!isEmployee && <th>Employee</th>}
                   <th>Date</th>
                   <th>Check In</th>
                   <th>Check Out</th>
@@ -1480,31 +1478,24 @@ function Attendance({user, employees, toast}) {
                     const isActiveRow = r.employee_id===user.id && r.check_in && !r.check_out
                     return (
                       <tr key={r.id} style={{background:isActiveRow?'rgba(99,102,241,.04)':''}}>
-                        {isAdmin && (
-                          <td>
-                            <div style={{display:'flex',alignItems:'center',gap:8}}>
-                              <Avatar name={emp?.name||'?'} size={28}/>
-                              <span style={{fontWeight:600,fontSize:13,color:'var(--text)'}}>{emp?.name||'?'}</span>
-                            </div>
-                          </td>
+                        {!isEmployee && (
+                          <td><div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <Avatar name={emp?.name||'?'} size={28}/>
+                            <span style={{fontWeight:600,fontSize:13,color:'var(--text)'}}>{emp?.name||'?'}</span>
+                          </div></td>
                         )}
                         <td style={{fontWeight:600,color:'var(--text)',fontSize:13}}>{fmt(r.date)}</td>
                         <td style={{color:'#10b981',fontWeight:700,fontFamily:'monospace'}}>{fmtTime(r.check_in)}</td>
-                        <td style={{color: r.check_out ? '#ef4444' : 'var(--muted)', fontWeight:700, fontFamily:'monospace'}}>
+                        <td style={{color:r.check_out?'#ef4444':'var(--muted)',fontWeight:700,fontFamily:'monospace'}}>
                           {r.check_out ? fmtTime(r.check_out) : isActiveRow ? <span style={{color:'#f59e0b',fontSize:12}}>● In progress</span> : '—'}
                         </td>
                         <td style={{fontWeight:800,color:'var(--text)',fontFamily:'monospace'}}>
-                          {r.hours_worked
-                            ? <span style={{color:'#6366f1'}}>{r.hours_worked}h</span>
-                            : isActiveRow
-                              ? <span style={{color:'#f59e0b',fontSize:12}}>Live ↑</span>
-                              : '—'
-                          }
+                          {r.hours_worked ? <span style={{color:'#6366f1'}}>{r.hours_worked}h</span> : isActiveRow ? <span style={{color:'#f59e0b',fontSize:12}}>Live ↑</span> : '—'}
                         </td>
                         <td>
                           <span style={{
-                            background: r.status==='present'?'#dcfce7':r.status==='absent'?'#fee2e2':r.status==='on_leave'?'#fef9c3':'#ede9fe',
-                            color:       r.status==='present'?'#166534':r.status==='absent'?'#991b1b':r.status==='on_leave'?'#713f12':'#5b21b6',
+                            background:r.status==='present'?'#dcfce7':r.status==='absent'?'#fee2e2':r.status==='on_leave'?'#fef9c3':'#ede9fe',
+                            color:r.status==='present'?'#166534':r.status==='absent'?'#991b1b':r.status==='on_leave'?'#713f12':'#5b21b6',
                             padding:'2px 10px',borderRadius:99,fontSize:12,fontWeight:600,textTransform:'capitalize'
                           }}>{r.status.replace('_',' ')}</span>
                         </td>
@@ -1518,11 +1509,11 @@ function Attendance({user, employees, toast}) {
         </div>
       )}
 
-      {/* Admin log modal */}
+      {/* Admin/team_lead log modal */}
       <Modal open={adminModal} onClose={()=>setAdminModal(false)} title="Log Attendance">
         <Field label="Employee">
           <select className="input" value={adminForm.employee_id} onChange={e=>setAdminForm(p=>({...p,employee_id:e.target.value}))}>
-            {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+            {(isTeamLead ? deptEmployees : employees).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </Field>
         <Field label="Date"><input className="input" type="date" value={adminForm.date} onChange={e=>setAdminForm(p=>({...p,date:e.target.value}))}/></Field>
@@ -1547,7 +1538,6 @@ function Attendance({user, employees, toast}) {
     </div>
   )
 }
-
 // ─── Leave Management ──────────────────────────────────────────
 function LeaveManagement({user, employees, toast}) {
   const [leaves, setLeaves] = useState([])
