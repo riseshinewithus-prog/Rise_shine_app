@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_Y2cKkkTA26OHy0GAKZV6Mw_Em_A8aS3'
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // ─── Constants ────────────────────────────────────────────────
-const DEPTS = ['Management','Engineering','Design','Marketing','Operations','HR','Finance','Sales','Intern']
+const DEPTS = ['Management','Engineering','Design','Marketing','Operations','HR','Finance','Sales']
 const PRIORITY_META = {
   low:    { label:'Low',    bg:'#dcfce7', color:'#166534' },
   medium: { label:'Medium', bg:'#fef9c3', color:'#713f12' },
@@ -1238,13 +1238,34 @@ function Attendance({user, employees, toast}) {
   const [todayRecord, setTodayRecord] = useState(null)
   const [loading, setLoading] = useState(true)
   const [filterEmp, setFilterEmp] = useState(user.role==='employee'?user.id:'all')
-  const now = new Date()
-  const [filterMonth, setFilterMonth] = useState(now.getMonth()+1)
-  const [filterYear, setFilterYear] = useState(now.getFullYear())
+  const nowDate = new Date()
+  const [filterMonth, setFilterMonth] = useState(nowDate.getMonth()+1)
+  const [filterYear, setFilterYear] = useState(nowDate.getFullYear())
   const [adminModal, setAdminModal] = useState(false)
   const [adminForm, setAdminForm] = useState({employee_id:employees[0]?.id||'',date:today(),status:'present',notes:''})
   const [saving, setSaving] = useState(false)
+  const [elapsed, setElapsed] = useState(0)       // seconds since check-in
+  const timerRef = useRef(null)
   const isAdmin = user.role==='admin'||user.role==='team_lead'
+
+  // ── live timer ──────────────────────────────────────────────
+  const startTimer = (checkInTs) => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - new Date(checkInTs).getTime()) / 1000))
+    }, 1000)
+  }
+  const stopTimer = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+  }
+  useEffect(() => () => stopTimer(), [])
+
+  const fmtElapsed = (secs) => {
+    const h = Math.floor(secs / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    const s = secs % 60
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+  }
 
   const load = async () => {
     setLoading(true)
@@ -1255,6 +1276,11 @@ function Attendance({user, employees, toast}) {
       ])
       setTodayRecord(rec)
       setAttendance(all||[])
+      // resume timer if already checked in but not out
+      if (rec?.check_in && !rec?.check_out) {
+        setElapsed(Math.floor((Date.now() - new Date(rec.check_in).getTime()) / 1000))
+        startTimer(rec.check_in)
+      }
     } catch(e) { toast('Failed to load attendance','error') }
     setLoading(false)
   }
@@ -1265,20 +1291,27 @@ function Attendance({user, employees, toast}) {
     try {
       const rec = await DB.checkIn(user.id)
       setTodayRecord(rec)
+      setElapsed(0)
+      startTimer(rec.check_in)
       toast('Checked in at '+fmtTime(rec.check_in),'success')
+      load()
     } catch(e) { toast('Check-in failed: '+e.message,'error') }
     setSaving(false)
   }
+
   const handleCheckOut = async () => {
     if (!todayRecord) return
     setSaving(true)
     try {
       const rec = await DB.checkOut(todayRecord.id)
+      stopTimer()
       setTodayRecord(rec)
-      toast(`Checked out. Hours worked: ${rec.hours_worked}h`,'success')
+      toast(`Checked out at ${fmtTime(rec.check_out)} — ${rec.hours_worked}h worked`,'success')
+      load()
     } catch(e) { toast('Check-out failed: '+e.message,'error') }
     setSaving(false)
   }
+
   const handleAdminSave = async () => {
     setSaving(true)
     try {
@@ -1290,15 +1323,11 @@ function Attendance({user, employees, toast}) {
     setSaving(false)
   }
 
-  const checkedIn = !!todayRecord?.check_in
+  const checkedIn  = !!todayRecord?.check_in
   const checkedOut = !!todayRecord?.check_out
-  const hours = todayRecord?.hours_worked
 
   // Monthly summary
-  const summary = attendance.reduce((acc,r)=>{
-    acc[r.status] = (acc[r.status]||0)+1
-    return acc
-  },{})
+  const summary = attendance.reduce((acc,r)=>{ acc[r.status]=(acc[r.status]||0)+1; return acc },{})
 
   return (
     <div className="page">
@@ -1307,28 +1336,89 @@ function Attendance({user, employees, toast}) {
         {isAdmin && <button className="btn-primary" onClick={()=>setAdminModal(true)}>+ Log Attendance</button>}
       </div>
 
-      {/* Today check-in widget */}
-      <div className="card" style={{background:'linear-gradient(135deg,#0f172a,#1e1b4b)',border:'none'}}>
-        <div style={{display:'flex',alignItems:'center',gap:24,flexWrap:'wrap'}}>
-          <div style={{flex:1}}>
-            <div style={{color:'rgba(255,255,255,.6)',fontSize:12,fontWeight:700,textTransform:'uppercase',letterSpacing:'.08em'}}>Today — {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</div>
+      {/* ── Today hero widget ── */}
+      <div className="card" style={{background:'linear-gradient(135deg,#0f172a,#1e1b4b)',border:'none',padding:'28px 32px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:32,flexWrap:'wrap'}}>
+
+          {/* Left: status text */}
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{color:'rgba(255,255,255,.5)',fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'.1em',marginBottom:6}}>
+              {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
+            </div>
             {checkedOut ? (
-              <div style={{color:'#fff',fontSize:24,fontWeight:900,marginTop:6}}>✅ Day complete — {hours}h worked</div>
+              <>
+                <div style={{color:'#86efac',fontSize:22,fontWeight:900}}>✅ Day Complete</div>
+                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>
+                  {fmtTime(todayRecord.check_in)} → {fmtTime(todayRecord.check_out)}
+                </div>
+                <div style={{color:'#fff',fontSize:15,marginTop:2,fontWeight:600}}>
+                  Total: {todayRecord.hours_worked}h worked
+                </div>
+              </>
             ) : checkedIn ? (
-              <div style={{color:'#fff',fontSize:24,fontWeight:900,marginTop:6}}>⚙️ Working… checked in at {fmtTime(todayRecord.check_in)}</div>
+              <>
+                <div style={{color:'#fde68a',fontSize:22,fontWeight:900}}>⚙️ Currently Working</div>
+                <div style={{color:'rgba(255,255,255,.6)',fontSize:14,marginTop:4}}>
+                  Checked in at {fmtTime(todayRecord.check_in)}
+                </div>
+              </>
             ) : (
-              <div style={{color:'#fff',fontSize:24,fontWeight:900,marginTop:6}}>☀️ Ready to start your day?</div>
+              <>
+                <div style={{color:'#fff',fontSize:22,fontWeight:900}}>☀️ Ready to start?</div>
+                <div style={{color:'rgba(255,255,255,.5)',fontSize:14,marginTop:4}}>Click Check In to begin your shift</div>
+              </>
             )}
           </div>
-          <div style={{display:'flex',gap:12}}>
+
+          {/* Center: live timer */}
+          {checkedIn && !checkedOut && (
+            <div style={{textAlign:'center'}}>
+              <div style={{
+                fontFamily:'monospace',
+                fontSize:48,
+                fontWeight:900,
+                color:'#fff',
+                letterSpacing:'0.05em',
+                lineHeight:1,
+                textShadow:'0 0 40px rgba(99,102,241,.6)'
+              }}>
+                {fmtElapsed(elapsed)}
+              </div>
+              <div style={{color:'rgba(255,255,255,.4)',fontSize:11,marginTop:6,textTransform:'uppercase',letterSpacing:'.1em'}}>
+                hrs : min : sec
+              </div>
+            </div>
+          )}
+
+          {checkedOut && (
+            <div style={{textAlign:'center'}}>
+              <div style={{fontFamily:'monospace',fontSize:48,fontWeight:900,color:'#86efac',letterSpacing:'0.05em',lineHeight:1}}>
+                {todayRecord.hours_worked}h
+              </div>
+              <div style={{color:'rgba(255,255,255,.4)',fontSize:11,marginTop:6,textTransform:'uppercase',letterSpacing:'.1em'}}>total worked</div>
+            </div>
+          )}
+
+          {/* Right: button */}
+          <div>
             {!checkedIn && (
-              <button className="btn-primary" style={{fontSize:16,padding:'13px 28px',background:'#10b981'}} onClick={handleCheckIn} disabled={saving}>
-                {saving?'…':'🟢 Check In'}
+              <button onClick={handleCheckIn} disabled={saving} style={{
+                background:'#10b981',color:'#fff',border:'none',borderRadius:16,
+                padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',
+                boxShadow:'0 4px 24px rgba(16,185,129,.4)',transition:'transform .1s',
+                display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'
+              }}>
+                <span style={{fontSize:22}}>🟢</span> Check In
               </button>
             )}
             {checkedIn && !checkedOut && (
-              <button className="btn-primary" style={{fontSize:16,padding:'13px 28px',background:'#ef4444'}} onClick={handleCheckOut} disabled={saving}>
-                {saving?'…':'🔴 Check Out'}
+              <button onClick={handleCheckOut} disabled={saving} style={{
+                background:'#ef4444',color:'#fff',border:'none',borderRadius:16,
+                padding:'16px 36px',fontSize:17,fontWeight:800,cursor:'pointer',
+                boxShadow:'0 4px 24px rgba(239,68,68,.4)',transition:'transform .1s',
+                display:'flex',alignItems:'center',gap:10,fontFamily:'inherit'
+              }}>
+                <span style={{fontSize:22}}>🔴</span> Check Out
               </button>
             )}
           </div>
@@ -1338,14 +1428,17 @@ function Attendance({user, employees, toast}) {
       {/* Summary stats */}
       <div className="grid-4">
         {[
-          {label:'Present',val:summary.present||0,color:'#10b981',icon:'✅'},
-          {label:'Absent',val:summary.absent||0,color:'#ef4444',icon:'❌'},
-          {label:'On Leave',val:summary.on_leave||0,color:'#f59e0b',icon:'🏖️'},
-          {label:'Half Day',val:summary.half_day||0,color:'#8b5cf6',icon:'⏰'},
+          {label:'Present',  val:summary.present||0,  color:'#10b981', icon:'✅'},
+          {label:'Absent',   val:summary.absent||0,   color:'#ef4444', icon:'❌'},
+          {label:'On Leave', val:summary.on_leave||0, color:'#f59e0b', icon:'🏖️'},
+          {label:'Half Day', val:summary.half_day||0, color:'#8b5cf6', icon:'⏰'},
         ].map(s=>(
           <div key={s.label} className="card" style={{display:'flex',alignItems:'center',gap:14}}>
             <div style={{width:46,height:46,borderRadius:12,background:s.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{s.icon}</div>
-            <div><div style={{fontSize:26,fontWeight:900,color:s.color}}>{s.val}</div><div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.label}</div></div>
+            <div>
+              <div style={{fontSize:26,fontWeight:900,color:s.color}}>{s.val}</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.label}</div>
+            </div>
           </div>
         ))}
       </div>
@@ -1368,30 +1461,51 @@ function Attendance({user, employees, toast}) {
       </div>
 
       {/* Log table */}
-      {loading?<Spinner/>:(
+      {loading ? <Spinner/> : (
         <div className="card" style={{padding:0,overflow:'hidden'}}>
           {!attendance.length ? <Empty msg="No attendance records for this period" icon="📅"/> : (
             <div style={{overflowX:'auto'}}>
               <table className="tbl">
                 <thead><tr>
-                  {isAdmin&&<th>Employee</th>}
-                  <th>Date</th><th>Check In</th><th>Check Out</th><th>Hours</th><th>Status</th>
+                  {isAdmin && <th>Employee</th>}
+                  <th>Date</th>
+                  <th>Check In</th>
+                  <th>Check Out</th>
+                  <th>Total Hours</th>
+                  <th>Status</th>
                 </tr></thead>
                 <tbody>
                   {attendance.map(r=>{
                     const emp = employees.find(e=>e.id===r.employee_id)
+                    const isActiveRow = r.employee_id===user.id && r.check_in && !r.check_out
                     return (
-                      <tr key={r.id}>
-                        {isAdmin&&<td><div style={{display:'flex',alignItems:'center',gap:8}}><Avatar name={emp?.name||'?'} size={28}/><span style={{fontWeight:600,fontSize:13,color:'var(--text)'}}>{emp?.name||'?'}</span></div></td>}
+                      <tr key={r.id} style={{background:isActiveRow?'rgba(99,102,241,.04)':''}}>
+                        {isAdmin && (
+                          <td>
+                            <div style={{display:'flex',alignItems:'center',gap:8}}>
+                              <Avatar name={emp?.name||'?'} size={28}/>
+                              <span style={{fontWeight:600,fontSize:13,color:'var(--text)'}}>{emp?.name||'?'}</span>
+                            </div>
+                          </td>
+                        )}
                         <td style={{fontWeight:600,color:'var(--text)',fontSize:13}}>{fmt(r.date)}</td>
-                        <td style={{color:'#10b981',fontWeight:600}}>{fmtTime(r.check_in)}</td>
-                        <td style={{color:'#ef4444',fontWeight:600}}>{fmtTime(r.check_out)}</td>
-                        <td style={{fontWeight:700,color:'var(--text)'}}>{r.hours_worked ? `${r.hours_worked}h` : '—'}</td>
+                        <td style={{color:'#10b981',fontWeight:700,fontFamily:'monospace'}}>{fmtTime(r.check_in)}</td>
+                        <td style={{color: r.check_out ? '#ef4444' : 'var(--muted)', fontWeight:700, fontFamily:'monospace'}}>
+                          {r.check_out ? fmtTime(r.check_out) : isActiveRow ? <span style={{color:'#f59e0b',fontSize:12}}>● In progress</span> : '—'}
+                        </td>
+                        <td style={{fontWeight:800,color:'var(--text)',fontFamily:'monospace'}}>
+                          {r.hours_worked
+                            ? <span style={{color:'#6366f1'}}>{r.hours_worked}h</span>
+                            : isActiveRow
+                              ? <span style={{color:'#f59e0b',fontSize:12}}>Live ↑</span>
+                              : '—'
+                          }
+                        </td>
                         <td>
                           <span style={{
-                            background:r.status==='present'?'#dcfce7':r.status==='absent'?'#fee2e2':r.status==='on_leave'?'#fef9c3':'#ede9fe',
-                            color:r.status==='present'?'#166534':r.status==='absent'?'#991b1b':r.status==='on_leave'?'#713f12':'#5b21b6',
-                            padding:'2px 10px',borderRadius:99,fontSize:12,fontWeight:600
+                            background: r.status==='present'?'#dcfce7':r.status==='absent'?'#fee2e2':r.status==='on_leave'?'#fef9c3':'#ede9fe',
+                            color:       r.status==='present'?'#166534':r.status==='absent'?'#991b1b':r.status==='on_leave'?'#713f12':'#5b21b6',
+                            padding:'2px 10px',borderRadius:99,fontSize:12,fontWeight:600,textTransform:'capitalize'
                           }}>{r.status.replace('_',' ')}</span>
                         </td>
                       </tr>
@@ -1404,12 +1518,26 @@ function Attendance({user, employees, toast}) {
         </div>
       )}
 
+      {/* Admin log modal */}
       <Modal open={adminModal} onClose={()=>setAdminModal(false)} title="Log Attendance">
-        <Field label="Employee"><select className="input" value={adminForm.employee_id} onChange={e=>setAdminForm(p=>({...p,employee_id:e.target.value}))}>{employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
+        <Field label="Employee">
+          <select className="input" value={adminForm.employee_id} onChange={e=>setAdminForm(p=>({...p,employee_id:e.target.value}))}>
+            {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Field>
         <Field label="Date"><input className="input" type="date" value={adminForm.date} onChange={e=>setAdminForm(p=>({...p,date:e.target.value}))}/></Field>
-        <Field label="Status"><select className="input" value={adminForm.status} onChange={e=>setAdminForm(p=>({...p,status:e.target.value}))}>
-          <option value="present">Present</option><option value="absent">Absent</option><option value="half_day">Half Day</option><option value="on_leave">On Leave</option>
-        </select></Field>
+        <div className="grid-2" style={{gap:10}}>
+          <Field label="Check In Time"><input className="input" type="time" value={adminForm.check_in||''} onChange={e=>setAdminForm(p=>({...p,check_in:e.target.value?`${adminForm.date}T${e.target.value}:00`:null}))}/></Field>
+          <Field label="Check Out Time"><input className="input" type="time" value={adminForm.check_out||''} onChange={e=>setAdminForm(p=>({...p,check_out:e.target.value?`${adminForm.date}T${e.target.value}:00`:null}))}/></Field>
+        </div>
+        <Field label="Status">
+          <select className="input" value={adminForm.status} onChange={e=>setAdminForm(p=>({...p,status:e.target.value}))}>
+            <option value="present">Present</option>
+            <option value="absent">Absent</option>
+            <option value="half_day">Half Day</option>
+            <option value="on_leave">On Leave</option>
+          </select>
+        </Field>
         <Field label="Notes"><input className="input" value={adminForm.notes||''} onChange={e=>setAdminForm(p=>({...p,notes:e.target.value}))} placeholder="Optional note"/></Field>
         <div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
           <button className="btn-sec" onClick={()=>setAdminModal(false)}>Cancel</button>
