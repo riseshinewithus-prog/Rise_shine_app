@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_Y2cKkkTA26OHy0GAKZV6Mw_Em_A8aS3'
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // ─── Constants ────────────────────────────────────────────────
-const DEPTS = ['Management','Engineering','Design','Marketing','Operations','HR','Finance','Sales']
+const DEPTS = ['Management','Engineering','Design','Marketing','Operations','HR','Finance','Sales','Intern']
 const PRIORITY_META = {
   low:    { label:'Low',    bg:'#dcfce7', color:'#166534' },
   medium: { label:'Medium', bg:'#fef9c3', color:'#713f12' },
