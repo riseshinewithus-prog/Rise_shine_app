@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 
 // ─── Supabase Config ──────────────────────────────────────────
 const SUPABASE_URL = 'https://vljgzcnjpcxsmbifrawk.supabase.co'
-const SUPABASE_ANON_KEY = 'sb_secret_-UT8YhWpoNqmd6jN4FSRfw_XMl5k8-_'
+const SUPABASE_ANON_KEY = 'sb_publishable_Y2cKkkTA26OHy0GAKZV6Mw_Em_A8aS3'
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // ─── Constants ────────────────────────────────────────────────
