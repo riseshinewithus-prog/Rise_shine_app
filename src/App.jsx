@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 // ─── Supabase Config ──────────────────────────────────────────
-onst SUPABASE_URL = 'https://vljgzcnjpcxsmbifrawk.supabase.co'
+const SUPABASE_URL = 'https://vljgzcnjpcxsmbifrawk.supabase.co'
 const SUPABASE_ANON_KEY = 'sb_publishable_Y2cKkkTA26OHy0GAKZV6Mw_Em_A8aS3'
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
